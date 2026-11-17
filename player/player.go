@@ -3,6 +3,7 @@ package player
 import (
 	"context"
 	"fmt"
+	"io"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -1076,14 +1077,17 @@ func (p *Player) RegisterYTDLMatcher(match func(string) bool) {
 }
 
 // ResolvedSource is a playable source produced by a SourceResolver at play
-// time: either a direct HTTP URL, or an ordered list of media segment URLs
-// whose concatenated bytes form one progressive stream (e.g. unencrypted
-// DASH fMP4 segments). Buffered sends URL to the buffered download and
-// ffmpeg pipeline, for a finite file at a signed URL that no buffered-URL
-// matcher can recognize.
+// time: a direct HTTP URL, an ordered list of media segment URLs whose
+// concatenated bytes form one progressive stream (e.g. unencrypted DASH fMP4
+// segments), or a Reader that yields the file bytes itself (e.g. decrypted
+// segments). Buffered sends URL to the buffered download and ffmpeg pipeline,
+// for a finite file at a signed URL that no buffered-URL matcher can
+// recognize. Segments and Reader always take the buffered pipeline, and the
+// player closes Reader when the track ends.
 type ResolvedSource struct {
 	URL      string
 	Segments []string
+	Reader   io.ReadCloser
 	Buffered bool
 }
 

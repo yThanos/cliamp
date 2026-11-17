@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -105,24 +104,24 @@ func TestNewClientSilent(t *testing.T) {
 	stored := storedCreds{AppID: "app", Secrets: []string{"bad", "good"}, PrivateKey: "key", UserAuthToken: "uat", UserID: "7", Label: "Old"}
 	withSecret := stored
 	withSecret.Secret = "stored"
+	noSecrets := stored
+	noSecrets.Secrets = []string{""}
 
 	tests := []struct {
 		name       string
 		creds      *storedCreds // nil means no credentials file
 		login      string       // user/login body
 		loginCode  int
-		goodSecret string // the secret that track/getFileUrl accepts
 		wantErr    string
 		wantSecret string
-		wantProbes int32
 	}{
 		{name: "no stored credentials", wantErr: "no stored credentials"},
 		{name: "incomplete credentials", creds: &storedCreds{AppID: "app"}, wantErr: "incomplete stored credentials"},
 		{name: "token rejected", creds: &withSecret, loginCode: http.StatusUnauthorized, wantErr: "stored token rejected"},
 		{name: "free account", creds: &withSecret, login: `{"user":{"id":7,"credential":{}}}`, wantErr: "not eligible"},
 		{name: "stored secret", creds: &withSecret, login: eligible, wantSecret: "stored"},
-		{name: "secret validated", creds: &stored, login: eligible, goodSecret: "good", wantSecret: "good", wantProbes: 2},
-		{name: "no valid secret", creds: &stored, login: eligible, goodSecret: "other", wantErr: "no valid signing secret", wantProbes: 2},
+		{name: "first secret picked", creds: &stored, login: eligible, wantSecret: "bad"},
+		{name: "no secret", creds: &noSecrets, login: eligible, wantErr: "no signing secret"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -132,7 +131,6 @@ func TestNewClientSilent(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			var probes atomic.Int32
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				q := r.URL.Query()
 				switch r.URL.Path {
@@ -144,14 +142,6 @@ func TestNewClientSilent(t *testing.T) {
 						w.WriteHeader(tt.loginCode)
 					}
 					_, _ = io.WriteString(w, tt.login)
-				case "/track/getFileUrl":
-					probes.Add(1)
-					want := trackFileURLSig(q.Get("track_id"), 5, q.Get("request_ts"), tt.goodSecret)
-					if q.Get("request_sig") != want {
-						http.Error(w, `{"status":"error"}`, http.StatusBadRequest)
-						return
-					}
-					_, _ = io.WriteString(w, `{"url":"https://cdn.example/probe.mp3"}`)
 				default:
 					t.Errorf("unexpected request %s", r.URL.Path)
 					http.NotFound(w, r)
@@ -160,9 +150,6 @@ func TestNewClientSilent(t *testing.T) {
 			defer srv.Close()
 
 			c, err := newClientSilent(context.Background(), srv.URL+"/")
-			if n := probes.Load(); n != tt.wantProbes {
-				t.Errorf("secret probes = %d, want %d", n, tt.wantProbes)
-			}
 			if tt.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
 					t.Fatalf("newClientSilent() error = %v, want it to contain %q", err, tt.wantErr)

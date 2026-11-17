@@ -1,6 +1,7 @@
 package player
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -381,5 +382,26 @@ func TestNavBufferSegmentsSurfacesMidStreamError(t *testing.T) {
 func TestNavBufferSegmentsRejectsEmptyList(t *testing.T) {
 	if _, _, err := newNavBufferSegments(nil); err == nil {
 		t.Fatal("expected error for empty segment list")
+	}
+}
+
+func TestNavBufferReader(t *testing.T) {
+	want := bytes.Repeat([]byte("decrypted flac "), 10_000)
+	nb, contentLen, err := newNavBufferReader(io.NopCloser(bytes.NewReader(want)))
+	if err != nil {
+		t.Fatalf("newNavBufferReader() error = %v", err)
+	}
+	defer nb.Close()
+	if contentLen != -1 {
+		t.Errorf("contentLen = %d, want -1", contentLen)
+	}
+	r := nb.newReader()
+	defer r.Close()
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read buffer: %v", err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("buffer returned %d bytes, want %d identical bytes", len(got), len(want))
 	}
 }

@@ -1,10 +1,12 @@
 package qobuz
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"net/http"
 	"net/http/httptest"
@@ -218,9 +220,9 @@ func TestAPIErrorsMapToSignIn(t *testing.T) {
 	}
 }
 
-// catalogServer answers the list endpoints with the same 3 tracks and a
-// signed URL for track/getFileUrl. It counts the getFileUrl calls.
-func catalogServer(t *testing.T, fileURLCalls *atomic.Int32) *httptest.Server {
+// catalogServer answers the list endpoints with the same 3 tracks. It counts
+// the stream calls (session/start and file/url).
+func catalogServer(t *testing.T, streamCalls *atomic.Int32) *httptest.Server {
 	const tracks = `{"items":[
 		{"id":1,"title":"One","streamable":true,"performer":{"name":"A"}},
 		{"id":2,"title":"Two","streamable":true,"performer":{"name":"A"}},
@@ -235,9 +237,9 @@ func catalogServer(t *testing.T, fileURLCalls *atomic.Int32) *httptest.Server {
 			fmt.Fprintf(w, `{"tracks":%s}`, tracks)
 		case "/album/get":
 			fmt.Fprintf(w, `{"id":"a1","title":"Album","tracks":%s}`, tracks)
-		case "/track/getFileUrl":
-			fileURLCalls.Add(1)
-			fmt.Fprintf(w, `{"url":"https://cdn.example/%s.flac?sig=x"}`, r.URL.Query().Get("track_id"))
+		case "/session/start", "/file/url":
+			streamCalls.Add(1)
+			http.Error(w, "unexpected", http.StatusInternalServerError)
 		default:
 			t.Errorf("unexpected request %s", r.URL.Path)
 			http.NotFound(w, r)
@@ -245,8 +247,8 @@ func catalogServer(t *testing.T, fileURLCalls *atomic.Int32) *httptest.Server {
 	}))
 }
 
-// Opening a list must not sign a stream URL for each track: the tracks carry
-// qobuz:// URIs, and the URL resolves when a track starts.
+// Opening a list must not open a stream for each track: the tracks carry
+// qobuz:// URIs, and the stream resolves when a track starts.
 func TestListsCarryTrackURIs(t *testing.T) {
 	tests := []struct {
 		name string
@@ -262,8 +264,8 @@ func TestListsCarryTrackURIs(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var fileURLCalls atomic.Int32
-			srv := catalogServer(t, &fileURLCalls)
+			var streamCalls atomic.Int32
+			srv := catalogServer(t, &streamCalls)
 			defer srv.Close()
 
 			p := New(6)
@@ -272,8 +274,8 @@ func TestListsCarryTrackURIs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load error = %v", err)
 			}
-			if n := fileURLCalls.Load(); n != 0 {
-				t.Errorf("track/getFileUrl calls = %d, want 0", n)
+			if n := streamCalls.Load(); n != 0 {
+				t.Errorf("stream calls = %d, want 0", n)
 			}
 			if len(got) != 3 {
 				t.Fatalf("got %d tracks, want 3", len(got))
@@ -361,49 +363,44 @@ func TestTrackFromAPI(t *testing.T) {
 }
 
 func TestResolveSource(t *testing.T) {
+	f := newQBZFixture(t, [][][]byte{{[]byte("frame-a"), []byte("frame-b")}})
 	tests := []struct {
 		name       string
 		uri        string
-		status     int    // answer status for track/getFileUrl, 0 means 200
-		body       string // answer body for track/getFileUrl
-		wantURL    string
+		fileURL    func(w http.ResponseWriter, r *http.Request) bool // overrides file/url
 		wantErr    string
 		wantAuth   bool
-		wantCalls  int32
 		keepClient bool
 	}{
+		{name: "decrypted stream", uri: "qobuz://track/5966783", keepClient: true},
 		{
-			name:       "signed URL",
-			uri:        "qobuz://track/5966783",
-			body:       `{"url":"https://streaming-qobuz.example/5966783.flac?sig=a"}`,
-			wantURL:    "https://streaming-qobuz.example/5966783.flac?sig=a",
-			wantCalls:  1,
+			name: "preview only",
+			uri:  "qobuz://track/1",
+			fileURL: func(w http.ResponseWriter, _ *http.Request) bool {
+				_, _ = w.Write([]byte(`{"url":"https://cdn.example/preview.mp3"}`))
+				return true
+			},
+			wantErr:    "preview streams are not supported",
 			keepClient: true,
 		},
 		{
-			name:       "empty URL",
-			uri:        "qobuz://track/1",
-			body:       `{"url":""}`,
-			wantErr:    "no stream URL",
-			wantCalls:  1,
-			keepClient: true,
-		},
-		{
-			name:       "API error",
-			uri:        "qobuz://track/1",
-			status:     http.StatusBadRequest,
-			body:       `{"message":"Invalid Request Signature"}`,
+			name: "API error",
+			uri:  "qobuz://track/1",
+			fileURL: func(w http.ResponseWriter, _ *http.Request) bool {
+				http.Error(w, `{"message":"Invalid Request Signature"}`, http.StatusBadRequest)
+				return true
+			},
 			wantErr:    "HTTP 400",
-			wantCalls:  1,
 			keepClient: true,
 		},
 		{
-			name:      "401 asks for sign-in",
-			uri:       "qobuz://track/1",
-			status:    http.StatusUnauthorized,
-			body:      `{"message":"User authentication is required."}`,
-			wantAuth:  true,
-			wantCalls: 1,
+			name: "401 asks for sign-in",
+			uri:  "qobuz://track/1",
+			fileURL: func(w http.ResponseWriter, _ *http.Request) bool {
+				http.Error(w, `{"message":"User authentication is required."}`, http.StatusUnauthorized)
+				return true
+			},
+			wantAuth: true,
 		},
 		{name: "no ID", uri: "qobuz://track/", wantErr: "invalid track URI", keepClient: true},
 		{name: "other scheme", uri: "tidal://track/1", wantErr: "invalid track URI", keepClient: true},
@@ -413,25 +410,17 @@ func TestResolveSource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("CLIAMP_CONFIG_DIR", t.TempDir())
-			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				calls.Add(1)
-				if r.URL.Path != "/track/getFileUrl" {
-					t.Errorf("path = %q, want /track/getFileUrl", r.URL.Path)
-				}
+			srv := qbzServer(t, f, func(w http.ResponseWriter, r *http.Request) bool {
 				if got := r.URL.Query().Get("format_id"); got != "27" {
 					t.Errorf("format_id = %q, want 27", got)
 				}
-				if tt.status != 0 {
-					w.WriteHeader(tt.status)
-				}
-				_, _ = w.Write([]byte(tt.body))
-			}))
+				return tt.fileURL != nil && tt.fileURL(w, r)
+			})
 			defer srv.Close()
 
 			p := New(27)
 			p.client = testClient(srv)
-			got, err := p.ResolveSource(tt.uri)
+			rc, err := p.ResolveSource(tt.uri)
 			switch {
 			case tt.wantAuth:
 				if !errors.Is(err, playlist.ErrNeedsAuth) {
@@ -443,12 +432,18 @@ func TestResolveSource(t *testing.T) {
 				}
 			case err != nil:
 				t.Fatalf("ResolveSource() error = %v", err)
+			default:
+				got, err := io.ReadAll(rc)
+				rc.Close()
+				if err != nil {
+					t.Fatalf("read stream: %v", err)
+				}
+				if !bytes.Equal(got, f.want) {
+					t.Errorf("stream bytes = %q, want %q", got, f.want)
+				}
 			}
-			if got != tt.wantURL {
-				t.Errorf("ResolveSource() = %q, want %q", got, tt.wantURL)
-			}
-			if n := calls.Load(); n != tt.wantCalls {
-				t.Errorf("API calls = %d, want %d", n, tt.wantCalls)
+			if err != nil && rc != nil {
+				t.Error("ResolveSource() returned a reader with an error")
 			}
 			p.mu.Lock()
 			hasClient := p.client != nil

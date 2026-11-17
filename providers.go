@@ -381,11 +381,11 @@ func (s *providerSet) registerPlayerHooks(p *player.Player) {
 			})
 		case *qobuz.QobuzProvider:
 			// Qobuz tracks carry qobuz:// URIs. The provider resolves them to a
-			// fresh signed URL when playback starts. The URL is a finite file
-			// that buffers for seeking.
+			// reader of decrypted FLAC bytes when playback starts. The reader
+			// buffers for seeking.
 			p.RegisterSourceResolver(qobuz.TrackURIPrefix, func(uri string) (player.ResolvedSource, error) {
-				u, err := prov.ResolveSource(uri)
-				return player.ResolvedSource{URL: u, Buffered: true}, err
+				rc, err := prov.ResolveSource(uri)
+				return player.ResolvedSource{Reader: rc}, err
 			})
 		case *tidal.TidalProvider:
 			// Tidal tracks carry tidal:// URIs; the provider resolves them to a

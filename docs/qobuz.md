@@ -4,7 +4,7 @@ Use cliamp to stream your [Qobuz](https://www.qobuz.com/) library through its au
 
 Qobuz delivers lossless FLAC. cliamp uses the same buffer-while-playing and `ffmpeg` pipeline as other lossless providers. Put `ffmpeg` on `PATH`.
 
-cliamp gets the signed stream URL of a track when the track starts. Lists open without a stream URL request for each track, and queued tracks do not expire.
+cliamp opens the Qobuz stream of a track when the track starts. Qobuz sends the track as encrypted segments. cliamp downloads and decrypts them while the track plays, so seeking works as with other lossless providers. Lists open without a stream request for each track, and queued tracks do not expire.
 
 ## Setup
 
@@ -95,9 +95,9 @@ After you load a playlist or album, cliamp returns to the standard playlist view
 - **Re-authenticate**: Run `cliamp qobuz reset` to clear stored credentials. Then restart cliamp, select Qobuz, and sign in again. This is the same as deleting `~/.config/cliamp/qobuz_credentials.json`.
 - **"session expired, sign in again"**: Qobuz rejected the stored sign-in with HTTP 401. The provider panel shows `Sign in to Qobuz. Press Enter to continue.` If this happens when a track starts, the status line shows `Sign-in required to play <track>.` Press `Enter` to sign in again. You do not need to restart cliamp.
 - **Track is unplayable / skipped**: Qobuz marks the track as not streamable, so cliamp marks it unplayable and continues.
-- **"Couldn't play" error on a track**: Qobuz refused the stream URL when the track started. The track may not be available for the subscription tier or region.
+- **"Couldn't play" error on a track**: Qobuz refused the stream when the track started. The track may not be available for the subscription tier or region.
 - **Hi-Res not delivered**: `quality = 27` does not add Hi-Res to a plan that lacks it. Qobuz returns the best quality allowed by the plan.
-- **Long-idle sessions**: cliamp resolves stream URLs when each track starts. Queued tracks continue after an idle period without manual refresh. `Ctrl+R` gets playlists and tracks again.
+- **Long-idle sessions**: cliamp opens a new stream session when each track starts. Queued tracks continue after an idle period without manual refresh. `Ctrl+R` gets playlists and tracks again.
 
 ## Requirements
 

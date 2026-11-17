@@ -123,18 +123,40 @@ func navBufferGet(ctx context.Context, rawURL string) (*http.Response, error) {
 	return resp, nil
 }
 
+// newNavBufferReader is like newNavBuffer for a byte stream that a provider
+// produces itself, such as decrypted media segments. The total length is
+// unknown up front, so the returned contentLength is always -1. Closing the
+// buffer closes rc.
+func newNavBufferReader(rc io.ReadCloser) (*navBuffer, int64, error) {
+	b, err := newNavBufferFile(-1, func() { _ = rc.Close() })
+	if err != nil {
+		return nil, 0, err
+	}
+	go b.download(rc)
+	return b, -1, nil
+}
+
 // newNavBufferFor builds the file-backed buffer for an opened response.
 // On error the response body is closed and cancel invoked.
 func newNavBufferFor(resp *http.Response, cancel context.CancelFunc) (*navBuffer, error) {
-	file, err := os.CreateTemp("", "cliamp-nav-*")
+	b, err := newNavBufferFile(resp.ContentLength, cancel)
 	if err != nil {
 		resp.Body.Close()
+	}
+	return b, err
+}
+
+// newNavBufferFile builds an empty file-backed buffer. total is the expected
+// length, -1 if unknown. On error cancel is invoked.
+func newNavBufferFile(total int64, cancel context.CancelFunc) (*navBuffer, error) {
+	file, err := os.CreateTemp("", "cliamp-nav-*")
+	if err != nil {
 		cancel()
 		return nil, fmt.Errorf("nav buffer tempfile: %w", err)
 	}
 
 	return &navBuffer{
-		total:        resp.ContentLength, // -1 if unknown
+		total:        total, // -1 if unknown
 		cancel:       cancel,
 		wait:         make(chan struct{}),
 		downloadDone: make(chan struct{}),

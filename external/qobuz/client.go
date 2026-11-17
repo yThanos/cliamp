@@ -261,77 +261,22 @@ func (c *client) loadOAuthUserInfo(ctx context.Context, phase string) error {
 	return c.applyUserInfo(info)
 }
 
-// validateSecret picks the first signing secret that the API accepts and stores
-// it on the client. It must be called before any signed request (getFileUrl,
-// favorites).
-func (c *client) validateSecret(ctx context.Context) error {
+// validateSecret stores the first non-empty bundle secret on the client. It
+// used to probe each secret with track/getFileUrl, but Qobuz retired that
+// endpoint (HTTP 410). The remaining signed endpoint, favorite/getUserFavorites,
+// accepts any request_sig, so no request can tell the secrets apart; the
+// qbz-1 stream requests sign with cmafSeed instead.
+func (c *client) validateSecret(context.Context) error {
 	if c.secret != "" {
 		return nil
 	}
 	for _, secret := range c.secrets {
-		if secret == "" {
-			continue
-		}
-		// 5966783 is a known public track id used purely to probe the secret.
-		if _, err := c.trackFileURL(ctx, "5966783", 5, secret); err == nil {
+		if secret != "" {
 			c.secret = secret
 			return nil
 		}
 	}
-	return fmt.Errorf("qobuz: no valid signing secret found")
-}
-
-// apiFileURL is the track/getFileUrl response.
-//
-// We use track/getFileUrl (the legacy endpoint) on purpose: it returns a plain
-// "url" pointing at a complete FLAC/MP3 file that the buffered ffmpeg pipeline
-// can stream directly. The current web player instead uses /file/url +
-// /session/start, which returns segmented, AES-128-CTR-encrypted CMAF (qbz-1)
-// requiring a full key-derivation + per-frame decryption pipeline. Per the
-// SofusA/qobine reverse-engineering notes, getFileUrl "may still work but the
-// web player now uses /file/url", so this is a known, monitored assumption.
-type apiFileURL struct {
-	URL          string  `json:"url"`
-	FormatID     int     `json:"format_id"`
-	MimeType     string  `json:"mime_type"`
-	Duration     int     `json:"duration"`
-	SamplingRate float64 `json:"sampling_rate"`
-	BitDepth     int     `json:"bit_depth"`
-}
-
-// trackFileURLSig computes the request_sig for track/getFileUrl. Qobuz signs
-// the concatenation of the endpoint path, the params in alphabetical order, the
-// request timestamp and the app secret. The exact layout matters: a change here
-// silently breaks streaming, so it's pinned by a test.
-func trackFileURLSig(trackID string, formatID int, ts, secret string) string {
-	raw := fmt.Sprintf("trackgetFileUrlformat_id%dintentstreamtrack_id%s%s%s",
-		formatID, trackID, ts, secret)
-	return md5hex(raw)
-}
-
-// trackFileURL returns a signed streaming URL for the given track. If
-// secretOverride is empty, the validated client secret is used.
-func (c *client) trackFileURL(ctx context.Context, trackID string, formatID int, secretOverride string) (apiFileURL, error) {
-	if !validQuality(formatID) {
-		return apiFileURL{}, fmt.Errorf("qobuz: invalid quality %d (choose 5, 6, 7 or 27)", formatID)
-	}
-	secret := secretOverride
-	if secret == "" {
-		secret = c.secret
-	}
-	unix := strconv.FormatInt(time.Now().Unix(), 10)
-	params := url.Values{
-		"request_ts":  {unix},
-		"request_sig": {trackFileURLSig(trackID, formatID, unix, secret)},
-		"track_id":    {trackID},
-		"format_id":   {strconv.Itoa(formatID)},
-		"intent":      {"stream"},
-	}
-	var out apiFileURL
-	if err := c.doGet(ctx, "track/getFileUrl", params, &out); err != nil {
-		return apiFileURL{}, err
-	}
-	return out, nil
+	return fmt.Errorf("qobuz: no signing secret in the web player bundle")
 }
 
 // userPlaylists returns the authenticated user's playlists.

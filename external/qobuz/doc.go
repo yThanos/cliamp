@@ -3,11 +3,12 @@
 // It authenticates via the interactive OAuth browser flow, scrapes the
 // app_id / signing secrets / OAuth private key from the Qobuz web player
 // bundle.js, and gives tracks qobuz://track/<id> paths. When a track starts,
-// ResolveSource gets a signed CDN stream URL through the legacy
-// track/getFileUrl endpoint. Those URLs are routed through cliamp's
-// buffer-while-playing + ffmpeg pipeline (see the Buffered source that
-// providers.go registers), the same path used by the Navidrome, Jellyfin,
-// Emby and Plex providers.
+// ResolveSource opens a qbz-1 session (session/start + file/url), then
+// downloads the CMAF segments and decrypts their AES-128-CTR FLAC frames
+// (cmaf.go). Qobuz retired the legacy track/getFileUrl endpoint with HTTP 410.
+// The decrypted FLAC bytes go through cliamp's buffer-while-playing + ffmpeg
+// pipeline (see the Reader source that providers.go registers), the same
+// path used by the Tidal, Navidrome, Jellyfin, Emby and Plex providers.
 //
 // Source material consulted for the reverse-engineered API surface:
 //

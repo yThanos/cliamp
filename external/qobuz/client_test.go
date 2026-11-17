@@ -27,18 +27,6 @@ func TestMD5Hex(t *testing.T) {
 	}
 }
 
-// TestTrackFileURLSig pins the request_sig layout for track/getFileUrl against
-// a precomputed md5. If the raw string format in trackFileURLSig changes,
-// streaming breaks and this test fails.
-func TestTrackFileURLSig(t *testing.T) {
-	// md5("trackgetFileUrlformat_id6intentstreamtrack_id59667831700000000deadbeefsecret")
-	const want = "bc7a09d686b3e5c1cd32f5268eff1030"
-	got := trackFileURLSig("5966783", 6, "1700000000", "deadbeefsecret")
-	if got != want {
-		t.Fatalf("trackFileURLSig = %q, want %q", got, want)
-	}
-}
-
 func TestValidQuality(t *testing.T) {
 	for _, q := range []int{5, 6, 7, 27} {
 		if !validQuality(q) {
@@ -308,41 +296,6 @@ func TestFavoriteParamsSignature(t *testing.T) {
 		if got := v.Get(key); got != want {
 			t.Errorf("%s = %q, want %q", key, got, want)
 		}
-	}
-}
-
-func TestTrackFileURLRequest(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/track/getFileUrl" {
-			t.Errorf("path = %q, want /track/getFileUrl", r.URL.Path)
-		}
-		q := r.URL.Query()
-		if want := trackFileURLSig("5966783", 27, q.Get("request_ts"), "deadbeefsecret"); q.Get("request_sig") != want {
-			t.Errorf("request_sig = %q, want %q", q.Get("request_sig"), want)
-		}
-		if q.Get("track_id") != "5966783" || q.Get("format_id") != "27" || q.Get("intent") != "stream" {
-			t.Errorf("query = %v", q)
-		}
-		if got := r.Header.Get("X-User-Auth-Token"); got != "token" {
-			t.Errorf("X-User-Auth-Token = %q, want token", got)
-		}
-		if got := r.Header.Get("User-Agent"); got != apiUA {
-			t.Errorf("User-Agent = %q", got)
-		}
-		_, _ = w.Write([]byte(`{"url":"https://cdn.example/file.flac","format_id":27,"bit_depth":24}`))
-	}))
-	defer srv.Close()
-
-	got, err := testClient(srv).trackFileURL(context.Background(), "5966783", 27, "")
-	if err != nil {
-		t.Fatalf("trackFileURL() error = %v", err)
-	}
-	if got.URL != "https://cdn.example/file.flac" || got.FormatID != 27 || got.BitDepth != 24 {
-		t.Errorf("trackFileURL() = %+v", got)
-	}
-
-	if _, err := testClient(srv).trackFileURL(context.Background(), "1", 4, ""); err == nil {
-		t.Error("trackFileURL() with quality 4 must fail before any request")
 	}
 }
 

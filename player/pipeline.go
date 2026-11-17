@@ -270,7 +270,7 @@ func (p *Player) buildPipeline(path string, knownDuration time.Duration, stale f
 
 	// Custom URIs with a registered SourceResolver (e.g. tidal://track/123)
 	// resolve to their actual bytes at play time, so short-lived signed URLs
-	// are always fresh. Segment lists get a concatenating navBuffer; direct
+	// are always fresh. Readers and segment lists get a navBuffer; direct
 	// URLs fall through to the normal HTTP handling below. A Buffered URL
 	// takes the buffered route there without a URL matcher.
 	buffered := false
@@ -278,6 +278,13 @@ func (p *Player) buildPipeline(path string, knownDuration time.Duration, stale f
 		src, err := resolver(path)
 		if err != nil {
 			return nil, fmt.Errorf("resolve source: %w", err)
+		}
+		if src.Reader != nil {
+			nb, contentLen, err := newNavBufferReader(src.Reader)
+			if err != nil {
+				return nil, fmt.Errorf("reader buffer: %w", err)
+			}
+			return p.bufferedPipeline(path, nb, contentLen, stale)
 		}
 		if len(src.Segments) > 0 {
 			nb, contentLen, err := newNavBufferSegments(src.Segments)

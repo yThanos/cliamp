@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math/rand/v2"
 	"slices"
 	"strings"
@@ -47,9 +48,9 @@ const favoritesPageSize = 100
 const randomTracksLimit = 500
 
 // TrackURIPrefix is the custom URI scheme for Qobuz tracks. Track paths are
-// "qobuz://track/<id>". The player resolves them to a fresh signed URL at
+// "qobuz://track/<id>". The player resolves them to a fresh qbz-1 stream at
 // play time through the SourceResolver registered in providers.go, so queue
-// entries never hold expirable URLs.
+// entries never hold expirable sessions or URLs.
 const TrackURIPrefix = "qobuz://track/"
 
 // albumSortTypes is the static sort list for Qobuz album browsing. Qobuz has no
@@ -511,31 +512,29 @@ func trackFromAPI(t apiTrack, albumFallback *apiAlbum) playlist.Track {
 	return track
 }
 
-// ResolveSource turns a qobuz://track/<id> URI into a signed stream URL when
-// playback starts. Resolving at play time keeps the URL fresh no matter how
-// long the track sat in a queue. It is registered as the player's
-// SourceResolver in providers.go.
-func (p *QobuzProvider) ResolveSource(uri string) (string, error) {
+// ResolveSource turns a qobuz://track/<id> URI into a reader of the track's
+// FLAC bytes when playback starts. It opens a fresh qbz-1 session, so the
+// stream never expires in a queue. Segments download and decrypt as the
+// reader is consumed; the caller must close it. It is registered as the
+// player's SourceResolver in providers.go.
+func (p *QobuzProvider) ResolveSource(uri string) (io.ReadCloser, error) {
 	trackID, ok := strings.CutPrefix(uri, TrackURIPrefix)
 	if !ok || trackID == "" || strings.ContainsAny(trackID, "/?#") {
-		return "", fmt.Errorf("qobuz: invalid track URI %q", uri)
+		return nil, fmt.Errorf("qobuz: invalid track URI %q", uri)
 	}
 	c, err := p.ensureClient()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	file, err := c.trackFileURL(ctx, trackID, p.quality, "")
+	stream, err := c.cmafStream(ctx, trackID, p.quality)
 	if err != nil {
-		return "", p.mapErr(c, err)
+		return nil, p.mapErr(c, err)
 	}
-	if file.URL == "" {
-		return "", fmt.Errorf("qobuz: no stream URL for track %s", trackID)
-	}
-	return file.URL, nil
+	return stream, nil
 }
 
 // trackArtist picks the best available artist name for a track.
